@@ -1,4 +1,4 @@
-# D-discord-bot
-A discord bot made in c++ with the d++ library
-Just have a simple /ban command
-see https://dpp.dev/
+Just some code examples of a discord bot using D++ library
+ - /ban command
+ - Interaction with betteruptime API
+ - Interaction with Pterodactyyl API
