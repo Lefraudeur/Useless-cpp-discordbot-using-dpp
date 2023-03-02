@@ -1,8 +1,10 @@
-#include <dpp/dpp.h>
+﻿#include <dpp/dpp.h>
 #include <dpp/nlohmann/json.hpp>
 #include <ctime>
 #include <iostream>
 #include <string>
+#include <stdio.h>
+#include <sqlite3.h>
 
 
 class monitor {
@@ -33,25 +35,45 @@ const std::string    BOT_TOKEN = "";
 
 int main()
 {
-    
+    //create sqlite database
+    sqlite3* db = nullptr;
+    int rc = sqlite3_open("sqlite.db", &db);
+    if (rc) {
+        std::cerr << "Can't open database" << std::endl << sqlite3_errmsg(db) << std::endl;
+        return 0;
+    }
+    else {
+        std::clog << "Database openned successfuly" << std::endl;
+    }
+    //sql create table instruction
+    std::string sql = "CREATE TABLE IF NOT EXISTS USERS (DISCORDID INT NOT NULL, PTERODACTYLID INT NOT NULL, SERVERS INT DEFAULT 0, MAXSERVERS INT DEFAULT 1, RAM INT DEFAULT 2048, STORAGE INT DEFAULT 8192);";
+    char* err_msg = nullptr;
+    rc = sqlite3_exec(db,  sql.c_str(), nullptr, nullptr, &err_msg);
+    if (rc != SQLITE_OK) {
+        std::cerr << "Could not create the table" << std::endl;
+        sqlite3_free(err_msg);
+        sqlite3_close(db);
+        return 0;
+    }
+    else {
+        std::clog << "Table created successfuly" << std::endl;
+    }
+
     /* Create bot cluster */
     dpp::cluster bot(BOT_TOKEN, dpp::i_all_intents);
 
     /* Output simple log messages to stdout */
     bot.on_log(dpp::utility::cout_logger());
-    /* Handle slash command */
 
     bot.on_message_create([&bot](const dpp::message_create_t& event) {
-        const dpp::snowflake channel_id = 980868841364156476;
-        const dpp::snowflake guild_id = 957691694466359296;
-        if (event.msg.channel_id == channel_id  && event.msg.guild_id == guild_id && !(event.msg.author.is_bot())) {
+        if (event.msg.channel_id == dpp::snowflake(980868841364156476) && !(event.msg.author.is_bot())) {
             bot.message_add_reaction(event.msg.id, event.msg.channel_id, "✅");
             bot.message_add_reaction(event.msg.id, event.msg.channel_id, "❌");
         }
     });
 
-
-    bot.on_slashcommand([&bot](const dpp::slashcommand_t& event) {
+    /* Handle slash command */
+    bot.on_slashcommand([&bot, db](const dpp::slashcommand_t& event) {
         if (event.command.get_command_name() == "ping") {
             event.reply(dpp::message("Pong!").set_flags(dpp::m_ephemeral));
         }
@@ -62,10 +84,10 @@ int main()
             dpp::snowflake userid = std::get<dpp::snowflake>(event.get_parameter("user"));
             std::string reason = "none";
             if (std::holds_alternative<std::string>(event.get_parameter("reason"))) reason = std::get<std::string>(event.get_parameter("reason"));
-            bot.user_get(userid, [event, &userid, reason, &bot](const dpp::confirmation_callback_t& member) {
+            bot.user_get(userid, [event, userid, reason, &bot](const dpp::confirmation_callback_t& member) {
                 if (!member.is_error()) {
                     dpp::user_identified banned(std::get<dpp::user_identified>(member.value));
-                    bot.set_audit_reason(reason).guild_ban_add(event.command.guild_id, userid, 0U, [event, &userid, reason, banned](const dpp::confirmation_callback_t& ban) {
+                    bot.set_audit_reason(reason).guild_ban_add(event.command.guild_id, userid, 0U, [event, reason, banned](const dpp::confirmation_callback_t& ban) {
                         if (!ban.is_error()) {
                             std::srand(time(nullptr));
                             int rnd = std::rand() % 5;
@@ -93,48 +115,82 @@ int main()
                 else event.reply(dpp::message(member.get_error().message).set_flags(dpp::m_ephemeral));
             });
         }
-        if (event.command.get_command_name() == "aregister") {
-            std::string email = std::get<std::string>(event.get_parameter("email"));
-            std::string username = std::get<std::string>(event.get_parameter("username"));
-            nlohmann::json postdata = {
-                {"email", email},
-                {"username", username},
-                {"first_name", username},
-                {"last_name", username}
-            };
-            dpp::http_headers headers = {
-                {"Accept", "application/json"},
-                {"Content-Type", "application/json"},
-                {"Authorization", "Bearer Pterodactyl application api key"}
-            };
-            bot.request("https://panel.overnode.tk/api/application/users", dpp::m_post, [event, &bot, email, username, headers](const dpp::http_request_completion_t& response) {
-                if (response.status == 201) {
-                    nlohmann::json content = nlohmann::json::parse(response.body);
-                    std::string url = "https://panel.overnode.tk/api/application/users/" + std::to_string(int(content["attributes"]["id"]));
-                    std::string password = std::get<std::string>(event.get_parameter("password"));
-                    nlohmann::json patchdata = {
+        if (event.command.get_command_name() == "panel") {
+            event.reply(dpp::message("https://panel.overnode.tk").set_flags(dpp::m_ephemeral));
+        }
+        if (event.command.get_command_name() == "register") {
+            std::string sql = "SELECT 1 FROM USERS WHERE DISCORDID=" + std::to_string(event.command.member.user_id) + ";";
+            //where sql instruction result stored
+            struct sqlite3_stmt* selectstmt = nullptr;
+            int rc = sqlite3_prepare_v2(db, sql.c_str(), -1, &selectstmt, nullptr);
+            if (rc == SQLITE_OK) {
+                if (sqlite3_step(selectstmt) == SQLITE_ROW) {
+                    //USER FOUND
+                    event.reply(dpp::message("You are already registered").set_flags(dpp::m_ephemeral));
+                }
+                else {
+                    //USER NOT FOUND
+                    std::string email = std::get<std::string>(event.get_parameter("email"));
+                    std::string username = std::get<std::string>(event.get_parameter("username"));
+                    nlohmann::json postdata = {
                         {"email", email},
                         {"username", username},
                         {"first_name", username},
-                        {"last_name", username},
-                        {"language", "en"},
-                        {"password", password}
+                        {"last_name", std::to_string(event.command.member.user_id)}
                     };
-                    bot.request(url, dpp::m_patch, [event, email, password](const dpp::http_request_completion_t& response2){
-                        if (response2.status == 200) {
-                            event.reply(dpp::message("**User successfully created :**\n> https://panel.overnode.tk\nemail: `" + email + "`\npassword: ||" + password + "||").set_flags(dpp::m_ephemeral));
+                    dpp::http_headers headers = {
+                        {"Accept", "application/json"},
+                        {"Content-Type", "application/json"},
+                        {"Authorization", "Bearer pterodactyltoken"}
+                    };
+                    bot.request("https://panel.overnode.tk/api/application/users", dpp::m_post, [event, &bot, email, username, headers, db](const dpp::http_request_completion_t& response) {
+                        if (response.status == 201) {
+                            nlohmann::json content = nlohmann::json::parse(response.body);
+                            std::string url = "https://panel.overnode.tk/api/application/users/" + std::to_string(int(content["attributes"]["id"]));
+                            std::string password = std::get<std::string>(event.get_parameter("password"));
+                            nlohmann::json patchdata = {
+                                {"email", email},
+                                {"username", username},
+                                {"first_name", username},
+                                {"last_name", std::to_string(event.command.member.user_id)},
+                                {"language", "en"},
+                                {"password", password}
+                            };
+                            bot.request(url, dpp::m_patch, [event, email, password, db, content](const dpp::http_request_completion_t& response2) {
+                                if (response2.status == 200) {
+                                    std::string sql = "INSERT INTO USERS (DISCORDID, PTERODACTYLID) VALUES (" + std::to_string(event.command.member.user_id) + ", " + std::to_string(int(content["attributes"]["id"])) + ");";
+                                    sqlite3_exec(db, sql.c_str(), nullptr, nullptr, nullptr);
+                                    event.reply(dpp::message("**Successfully registered :**\n> https://panel.overnode.tk\nemail: `" + email + "`\npassword: ||" + password + "||").set_flags(dpp::m_ephemeral));
+                                }
+                                else {
+                                    nlohmann::json error = nlohmann::json::parse(response2.body);
+                                    event.reply(dpp::message("Unexpected Error 2\n```" + std::string(error["errors"][0]["detail"]) + "```").set_flags(dpp::m_ephemeral));
+                                }
+                            }, nlohmann::to_string(patchdata), "application/json", headers);
                         }
                         else {
-                            nlohmann::json error = nlohmann::json::parse(response2.body);
-                            event.reply(dpp::message("Unexpected Error 2\n```" + std::string(error["errors"][0]["detail"]) + "```").set_flags(dpp::m_ephemeral));
+                            nlohmann::json error = nlohmann::json::parse(response.body);
+                            event.reply(dpp::message("Unexpected Error 1\n```" + std::string(error["errors"][0]["detail"]) + "```").set_flags(dpp::m_ephemeral));
                         }
-                    }, nlohmann::to_string(patchdata), "application/json", headers);
+                    }, nlohmann::to_string(postdata), "application/json", headers);
                 }
-                else {
-                    nlohmann::json error = nlohmann::json::parse(response.body);
-                    event.reply(dpp::message("Unexpected Error 1\n```" + std::string(error["errors"][0]["detail"]) + "```").set_flags(dpp::m_ephemeral));
-                }
-            }, nlohmann::to_string(postdata), "application/json", headers);
+            }
+            else {
+                event.reply(dpp::message("Error while accessing the database\n please  report this issue to the developper").set_flags(dpp::m_ephemeral));
+                std::cerr << "Error while accessing the database" << std::endl;
+            }
+            sqlite3_finalize(selectstmt);
+        }
+        if (event.command.get_command_name() == "delete") {
+            if (std::get<int>(event.get_parameter("number")) >= 2 && std::get<int>(event.get_parameter("number")) <= 100) {
+                bot.channel_get(event.command.channel_id, [&bot, event](const dpp::confirmation_callback_t& callback) {
+                    dpp::channel channel(std::get<dpp::channel>(callback.value));
+                    dpp::message_map messages = bot.messages_get_sync(event.command.channel_id, 0, channel.last_message_id, 0, std::get<int>(event.get_parameter("number")));
+                });
+            }
+            else {
+                event.reply("You can delete only from 2 to 100 messages at a time");
+            }
         }
     });
     /* Register slash command here in on_ready */
@@ -148,18 +204,22 @@ int main()
             ban.add_option(dpp::command_option(dpp::co_user, "user", "The user you want to ban", true));
             ban.add_option(dpp::command_option(dpp::co_string, "reason", "The reason why you ban this user", false));
             bot.global_command_create(ban);
-            bot.global_command_create(dpp::slashcommand("aregister", "register a user on the pterodactyl panel", bot.me.id).
-                add_option(dpp::command_option(dpp::co_string, "username", "The username of the account", true)).
-                add_option(dpp::command_option(dpp::co_string, "email", "The email of the user", true)).
-                add_option(dpp::command_option(dpp::co_string, "password", "The password of the user", true)).
-                set_default_permissions(dpp::p_administrator));
+            bot.global_command_create(dpp::slashcommand("panel", "Get the link of the pterodactyl panel", bot.me.id));
+            bot.global_command_create(dpp::slashcommand("register", "Register yourself on the pterodactyl panel", bot.me.id).
+                set_default_permissions(dpp::p_administrator).
+                add_option(dpp::command_option(dpp::co_string, "email", "Your email to login, please use a valid one", true)).
+                add_option(dpp::command_option(dpp::co_string, "username", "The username you want on the panel", true)).
+                add_option(dpp::command_option(dpp::co_string, "password", "Unique sercret password you will use to login to the panel", true)));
+            bot.global_command_create(dpp::slashcommand("delete", "delete a certain number of messages", bot.me.id).
+                set_default_permissions(dpp::p_manage_messages).
+                add_option(dpp::command_option(dpp::co_integer, "number", "The number of messages you want to delete", true)));
         }
     });
     monitor dashboard;
     monitor panel;
     bot.start_timer([&bot, &dashboard, &panel](const dpp::timer& timer) {
         dpp::http_headers headers = {
-                {"Authorization", "Bearer BetterstatusToken"}
+                {"Authorization", "Bearer Betteruptimetoken"}
         };
         bot.request("https://betteruptime.com/api/v2/monitors/1058870", dpp::m_get, [&dashboard](const dpp::http_request_completion_t& status) {
             if (status.status == 200) {
@@ -209,5 +269,6 @@ int main()
     },10);
     /* Start the bot */
     bot.start(false);
+    sqlite3_close(db);
     return 0;
 }
